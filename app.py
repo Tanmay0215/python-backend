@@ -1,5 +1,5 @@
 from flask import Flask, jsonify, request
-from flask_cors import CORS 
+from flask_cors import CORS
 import re
 import json
 from google import genai
@@ -12,7 +12,8 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-app.config['SECRET_KEY'] = 'your-secret-key'  # Change this to a secure random key in production
+# Use a secure secret key for session management
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'default-secret-key')  # Replace 'default-secret-key' in production
 
 # Sample menu items
 menu_items = {
@@ -117,8 +118,11 @@ def predict():
         if not day_type or not inventory:
             return jsonify({"error": "Missing required fields: 'day_type' or 'inventory'"}), 400
         
-        # Replace with your actual API key
+        # Get API key from environment variables
         api_key = os.getenv('API_KEY')
+        if not api_key:
+            return jsonify({"error": "API key not found in environment variables"}), 500
+        
         predictions = predict_canteen_demand_with_gemini(day_type, inventory, menu_items, api_key)
         return jsonify({"predictions": predictions}), 200
     except Exception as e:
@@ -129,4 +133,5 @@ def get_menu():
     return jsonify({"menu_items": menu_items}), 200
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # Use a production-ready WSGI server like Gunicorn to run the app
+    app.run(host='0.0.0.0', port=5000, debug=False)
