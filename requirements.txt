@@ -3,4 +3,4 @@ flask-cors==3.0.10
 google-genai
 python-dotenv
 groq
-PIL
+PIL==11.1.0
