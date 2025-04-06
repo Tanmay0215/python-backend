@@ -1,16 +1,11 @@
-from flask import Flask, request, jsonify, render_template, send_from_directory
+from flask import Flask, jsonify, request, render_template, session
 from flask_cors import CORS
+import re
 import json
 import os
-import tempfile
-from google import genai
-from google.genai import types
-from PIL import Image
-import io
-import re
-import html
 import uuid
 import groq
+from google import genai
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -23,10 +18,6 @@ CORS(app)
 app.config["SECRET_KEY"] = os.getenv(
     "SECRET_KEY", "default-secret-key"
 )  # Replace with a real secret key in production
-
-# Configure Gemini API
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # Get from environment variable
-client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Initialize chatbot instances storage
 chatbot_instances = {}
@@ -61,134 +52,9 @@ menu_items = {
     "Fruit Salad": {"fruits": 0.2, "sugar": 0.01},
 }
 
-# Load scholarship data
-SCHOLARSHIP_DATA_PATH = "scholarship.json"
-
-def load_scholarship_data():
-    try:
-        with open(SCHOLARSHIP_DATA_PATH) as f:
-            return json.load(f)
-    except Exception as e:
-        app.logger.error(f"Error loading scholarship data: {e}")
-        return None
-
-# Function to sanitize text content
-def sanitize_text(text):
-    # Remove markdown formatting and sanitize HTML
-    text = re.sub(r'[`*_~#]', '', text)  # Remove markdown symbols
-    text = html.escape(text)  # Escape HTML characters
-    return text
-
-# Function to clean up scholarship recommendations
-def clean_scholarship_recommendations(text):
-    # Clean the text from markdown formatting
-    text = sanitize_text(text)
-    
-    # Try to extract only the scholarship names
-    lines = text.strip().split('\n')
-    scholarships = []
-    
-    # Look for numbered or bulleted lists
-    pattern = r'^[0-9\.\-\*•]+\s*(.*?)(:.*)?$'
-    
-    for line in lines:
-        line = line.strip()
-        if line:
-            # Check if line starts with number or bullet
-            match = re.match(pattern, line)
-            if match:
-                scholarship_name = match.group(1).strip()
-                scholarships.append({"name": scholarship_name})
-            elif "scholarship" in line.lower():
-                # If no bullet but contains "scholarship", consider it a scholarship name
-                scholarships.append({"name": line})
-    
-    # If we couldn't extract structured data, get all non-empty lines
-    if not scholarships:
-        scholarships = [{"name": line.strip()} for line in lines if line.strip()]
-    
-    # Limit to top 5
-    return scholarships[:5]
-
-# Function to parse recommended scholarships from the text and match with scholarship data
-def parse_scholarships(recommendations_text, scholarship_data):
-    try:
-        # First sanitize the text to remove markdown
-        recommendations_text = sanitize_text(recommendations_text)
-        
-        # First try direct extraction
-        if not scholarship_data:
-            return clean_scholarship_recommendations(recommendations_text)
-        
-        # Clean the recommendations text
-        scholarship_names = []
-        lines = recommendations_text.strip().split('\n')
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            
-            # Extract scholarship name using regex
-            match = re.search(r'[0-9\.\-\*•]*\s*(.*?)(:|$)', line)
-            if match:
-                name = match.group(1).strip()
-                scholarship_names.append(name)
-        
-        # Match extracted names with scholarship data
-        matched_scholarships = []
-        all_scholarships = scholarship_data.get('scholarships', [])
-        
-        for name in scholarship_names:
-            # Try to find exact or partial match in scholarship data
-            for scholarship in all_scholarships:
-                if name.lower() in scholarship['name'].lower() or scholarship['name'].lower() in name.lower():
-                    matched_scholarships.append({
-                        "name": sanitize_text(scholarship['name']),
-                        "description": sanitize_text(scholarship.get('description', '')),
-                        "amount": scholarship.get('amount', 0)
-                    })
-                    break
-            else:
-                # If no match found, just add the name
-                matched_scholarships.append({"name": name})
-        
-        # If we couldn't match any scholarships, return clean text
-        if not matched_scholarships:
-            return clean_scholarship_recommendations(recommendations_text)
-        
-        return matched_scholarships[:5]  # Limit to top 5
-    except Exception as e:
-        app.logger.error(f"Error parsing scholarships: {e}")
-        return clean_scholarship_recommendations(recommendations_text)
-
-# Extraction prompt template
-EXTRACTION_PROMPT = """
-Extract all relevant scholarship information from this resume. Focus on:
-1. Education level (BTech or postgrad)
-2. CGPA or percentage (convert percentage to CGPA if needed, using 10-point scale)
-3. Number of backlogs (academic failures/repeats)
-4. Entrance exam scores (JEE/GATE/etc., convert to percentile if needed)
-5. Number of publications or research papers
-6. Work experience in years
-7. Family income (estimate based on background if not explicitly stated)
-8. Projects completed (count and brief descriptions)
-9. Extracurricular activities and achievements
-Format your response as a clean JSON object with these fields:
-{
-  "degree": "btech/postgrad",
-  "cgpa": "X.X",
-  "backlog": "X",
-  "entrance_score": "X",
-  "publications": "X",
-  "work_experience": "X",
-  "family_income": "XXXXX",
-  "projects": "brief summary",
-  "achievements": "brief summary"
-}
-For any missing information, make reasonable estimates based on the available context and include a "confidence" field for each estimate (high/medium/low).
-"""
-
 # ----- GROQ CHATBOT CLASS -----
+
+
 class GroqChatbot:
     def __init__(self, api_key, model="llama3-70b-8192", system_instruction=None):
         """
@@ -317,6 +183,8 @@ class GroqChatbot:
 
 
 # ----- CANTEEN DEMAND PREDICTION FUNCTION -----
+
+
 def predict_canteen_demand_with_gemini(day_type, inventory, menu_items, api_key):
     """
     Uses Gemini API to predict the quantity of different menu items to prepare
@@ -359,7 +227,7 @@ def predict_canteen_demand_with_gemini(day_type, inventory, menu_items, api_key)
        - Predict the appropriate number of portions based on day type and expected demand
        - Consider that not all students will eat every dish
        
-    3. Return only the menu items and the quantities to prepare.
+    3. Return only the menu items and the recommended quantities to prepare.
     
     RESPONSE FORMAT:
     Return a simple list of menu items and the quantities to prepare, like:
@@ -397,19 +265,19 @@ def predict_canteen_demand_with_gemini(day_type, inventory, menu_items, api_key)
 
 
 # ----- API ROUTES -----
+
+
 # Default route to serve the chatbot interface
 @app.route("/")
 def index():
     return render_template("index.html")
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    return jsonify({"status": "healthy"}), 200
 
 # Route to serve the canteen demand prediction interface
 @app.route("/canteen")
 def canteen():
     return render_template("canteen.html")
+
 
 # API routes for canteen demand prediction
 @app.route("/api/predict", methods=["POST"])
@@ -442,9 +310,11 @@ def predict():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
 @app.route("/api/menu", methods=["GET"])
 def get_menu():
     return jsonify({"menu_items": menu_items}), 200
+
 
 # API routes for chatbot
 @app.route("/api/chatbot/create", methods=["POST"])
@@ -481,6 +351,7 @@ def create_chatbot():
         }
     )
 
+
 @app.route("/api/chatbot/<chatbot_id>/chat", methods=["POST"])
 def send_message(chatbot_id):
     """Send a message to a specific chatbot instance"""
@@ -504,6 +375,7 @@ def send_message(chatbot_id):
     # Return the response
     return jsonify({"response": response})
 
+
 @app.route("/api/chatbot/<chatbot_id>/history", methods=["GET"])
 def get_history(chatbot_id):
     """Get the conversation history for a specific chatbot"""
@@ -520,6 +392,7 @@ def get_history(chatbot_id):
     # Return the history
     return jsonify({"history": history})
 
+
 @app.route("/api/chatbot/<chatbot_id>/reset", methods=["POST"])
 def reset_conversation(chatbot_id):
     """Reset the conversation for a specific chatbot"""
@@ -535,6 +408,7 @@ def reset_conversation(chatbot_id):
 
     # Return success message
     return jsonify({"message": message})
+
 
 @app.route("/api/chatbot/<chatbot_id>/export", methods=["GET"])
 def export_history(chatbot_id):
@@ -561,6 +435,7 @@ def export_history(chatbot_id):
 
     return response
 
+
 @app.route("/api/chatbot/<chatbot_id>/delete", methods=["DELETE"])
 def delete_chatbot(chatbot_id):
     """Delete a chatbot instance"""
@@ -574,58 +449,7 @@ def delete_chatbot(chatbot_id):
     # Return success message
     return jsonify({"message": "Chatbot deleted successfully"})
 
-@app.route('/api/process-resume', methods=['POST'])
-def process_resume():
-    """Process resume and recommend scholarships in one API call"""
-    if 'resume' not in request.files:
-        return jsonify({"error": "No resume file provided"}), 400
-    
-    file = request.files['resume']
-    if file.filename == '':
-        return jsonify({"error": "No file selected"}), 400
-    
-    try:
-        # Save the uploaded file temporarily
-        temp_file = tempfile.NamedTemporaryFile(delete=False)
-        file.save(temp_file.name)
-        temp_file.close()
-        
-        # Handle as image directly (no PDF conversion)
-        image = Image.open(temp_file.name)
-        
-        # Load scholarship data
-        scholarship_data = load_scholarship_data()
-        
-        # Extract resume data using Gemini (but don't return it)
-        extract_response = genai.GenerativeModel('gemini-pro-vision').generate_content(
-            [EXTRACTION_PROMPT, image]
-        )
-        
-        resume_data = extract_response.text
-        
-        # Generate scholarship recommendations
-        recommend_prompt = f"Based on the extracted resume data {resume_data} tell about which scholarship person should apply from this json file {scholarship_data} just written top 5 scholarships name in plain text format (not markdown)"
-        
-        recommend_response = genai.GenerativeModel('gemini-pro').generate_content(recommend_prompt)
-        
-        recommendations_text = recommend_response.text
-        
-        # Parse scholarships from recommendations
-        scholarships = parse_scholarships(recommendations_text, scholarship_data)
-        
-        # Clean up the temporary file
-        os.unlink(temp_file.name)
-        
-        # ONLY return scholarships information - no resume data at all
-        return jsonify({
-            "scholarships": scholarships,
-            "recommendations": sanitize_text(recommendations_text)
-        }), 200
-        
-    except Exception as e:
-        app.logger.error(f"Error processing resume: {e}")
-        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    app.run(debug=True, host="0.0.0.0", port=port)
