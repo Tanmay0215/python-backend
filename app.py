@@ -26,7 +26,7 @@ app.config["SECRET_KEY"] = os.getenv(
 
 # Configure Gemini API
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # Get from environment variable
-genai.configure(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Initialize chatbot instances storage
 chatbot_instances = {}
